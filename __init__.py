@@ -1,3 +1,4 @@
+import base64
 import io
 import json
 import os
@@ -36,13 +37,7 @@ class MossTTSApiNode:
                 ),
             },
             "optional": {
-                "prompt_audio": (
-                    "STRING",
-                    {
-                        "default": "",
-                        "multiline": False,
-                    },
-                ),
+                "prompt_audio": ("AUDIO",),
                 "user_text": (
                     "STRING",
                     {
@@ -50,20 +45,7 @@ class MossTTSApiNode:
                         "multiline": True,
                     },
                 ),
-                "user_audio": (
-                    "STRING",
-                    {
-                        "default": "",
-                        "multiline": False,
-                    },
-                ),
-                "session_id": (
-                    "STRING",
-                    {
-                        "default": "",
-                        "multiline": False,
-                    },
-                ),
+                "user_audio": ("AUDIO",),
             },
         }
 
@@ -79,10 +61,9 @@ class MossTTSApiNode:
         api_url,
         response_format,
         timeout,
-        prompt_audio="",
+        prompt_audio=None,
         user_text="",
-        user_audio="",
-        session_id="",
+        user_audio=None,
     ):
         text = text.strip()
         if not text:
@@ -94,12 +75,16 @@ class MossTTSApiNode:
             "text": text,
             "response_format": response_format,
         }
-        _put_optional(payload, "prompt_audio", prompt_audio)
         _put_optional(payload, "user_text", user_text)
-        _put_optional(payload, "user_audio", user_audio)
-        _put_optional(payload, "session_id", session_id)
+
+        if prompt_audio is not None:
+            payload["prompt_audio_base64"] = _audio_to_wav_base64(prompt_audio)
+
+        if user_audio is not None:
+            payload["user_audio_base64"] = _audio_to_wav_base64(user_audio)
 
         audio_bytes, headers = _post_json(api_url, api_key, payload, timeout)
+
         if response_format == "pcm":
             sample_rate = int(headers.get("X-Audio-Sample-Rate", "24000"))
             channels = int(headers.get("X-Audio-Channels", "1"))
@@ -130,6 +115,42 @@ def _put_optional(payload, key, value):
     value = value.strip() if isinstance(value, str) else value
     if value:
         payload[key] = value
+
+
+def _audio_to_wav_base64(audio):
+    return base64.b64encode(_audio_to_wav_bytes(audio)).decode("ascii")
+
+
+def _audio_to_wav_bytes(audio):
+    try:
+        import torch
+    except ImportError as error:
+        raise RuntimeError("未找到 torch，请在 ComfyUI 的 Python 环境中运行该节点。") from error
+
+    if not isinstance(audio, dict) or "waveform" not in audio or "sample_rate" not in audio:
+        raise ValueError("AUDIO 输入格式不正确，缺少 waveform 或 sample_rate")
+
+    waveform = audio["waveform"]
+    sample_rate = int(audio["sample_rate"])
+    if waveform.dim() == 3:
+        waveform = waveform[0]
+    elif waveform.dim() == 1:
+        waveform = waveform.unsqueeze(0)
+    elif waveform.dim() != 2:
+        raise ValueError(f"AUDIO waveform 维度不支持: {tuple(waveform.shape)}")
+
+    waveform = waveform.detach().cpu().to(torch.float32).clamp(-1.0, 1.0)
+    channels = int(waveform.shape[0])
+    pcm = (waveform.transpose(0, 1).contiguous() * 32767.0).to(torch.int16)
+
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(channels)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(pcm.numpy().tobytes())
+
+    return buffer.getvalue()
 
 
 def _post_json(url, api_key, payload, timeout):
