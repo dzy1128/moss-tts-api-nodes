@@ -21,7 +21,7 @@ class MossTTSApiNode:
                 "api_url": (
                     "STRING",
                     {
-                        "default": "http://127.0.0.1:8083/v1/audio/tts",
+                        "default": "http://192.168.207.229:8083/v1/audio/tts",
                     },
                 ),
                 "response_format": (["wav", "pcm"], {"default": "wav"}),
